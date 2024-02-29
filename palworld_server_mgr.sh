@@ -13,10 +13,6 @@ CFG_UID=$( stat --format %u "${CFG}" )
 PROC_UID=$( stat --format %u "/proc/$$" )
 PROC_USER=$( stat --format %U "/proc/$$" )
 
-(( PROC_UID == 0 )) && echo "ERROR: $ME cannot run from root" && exit 9
-(( PROC_UID != CFG_UID )) && echo "ERROR: config file $CFG MUST be owned by ${PROC_USER}" && exit 9
-[ "${CFG_PROT}" != 600 ] && echo "ERROR: config file MUST be protected with mask 600" && exit 9
-
 source "${CFG}"
 
 IDLE_TIME=$((IDLE_TIME*60)) # Convert to seconds
@@ -24,7 +20,9 @@ IDLE_TIME=$((IDLE_TIME*60)) # Convert to seconds
 ################################################################################
 error()
 {
-  echo "$1" >&2
+  echo ""
+  echo "ERROR: $1" >&2
+  echo ""
   exit 1
 }
 
@@ -32,12 +30,71 @@ ME=$( basename "$0" )
 SCRIPT="${DIR}/${ME}"
 SERVER_LOG="${DIR}/logs/palworld-server.log"
 LOG="${DIR}/logs/${ME}.log"
+UPDATE_SEMAPHORE="${DIR}/.update"
 
 [ ${#STOP_TIMES[@]} -ne 7 -a  ${#STOP_TIMES[@]} -ne 0 ] && error "STOP_TIMES must be an array of 0 or 7 entries"
 
 START_NOW=N
 START_LOG=N
 DEBUG=N
+
+#----------------------------------------------------------------------
+# %1 : variable
+# %2 : time string HH:MM
+# %3 : default value if %2 is empty
+# %4 : error info
+ParseTime()
+{
+local _H _M
+  [ -z "$2" ] && eval $1="$3" && return 0
+  [[ ! "$2" =~ ^([0-9]+)[:]([0-9]+)$ ]] && error "invalid time '$2' for $4"
+  _H=${BASH_REMATCH[1]}
+  _M=${BASH_REMATCH[2]}
+  [ ${_H} -lt 0 -o ${_H} -gt 23 ] && error "invalid time '$2' for $4"
+  [ ${_M} -lt 0 -o ${_M} -gt 59 ] && error "invalid time '$2' for $4"
+  eval $1=$((_H*3600+_M*60))
+}
+
+#----------------------------------------------------------------------
+# %1 : variable
+# %2 : time string HH:MM
+# %3 : default value if %2 is empty
+# %4 : error info
+ParseTodayTime()
+{
+local _today=$( date +%s)
+local _time    
+  today==$( date -d "@${_today}" +%D )
+  today=$( date -d "${_today}" +%s )
+
+  ParseTime "_time" "$2" "@" "$4"
+  [ "$_time" = "@" ] && eval $1="$3" && return 0
+  eval $1=$((_today+_time))
+}
+
+usage()
+{
+  echo "" >&2
+  echo "usage: ${ME} [-L] [-x] [-s] - run server manager interactively" >&2
+  echo "       ${ME} [-S|-U]        - send commands to running manager" >&2
+  echo "       ${ME} [-h] - to display this ehlp" >&2
+  echo "" >&2
+  echo " -L : log into log file in logs subdirectory instead of stdout" >&2
+  echo "      e.g. system journal" >&2
+  echo " -x : enable debugging outputting each script line as executed" >&2
+  echo " -s : start server immediatally without waiting for an incomming" >&2
+  echo "      connection" >&2
+  echo "" >&2
+  echo " -U : send a request to the server manager to check for a PalWorld server" >&2
+  echo "      update. Note that if the PalWorld server is currently running," >&2
+  echo "      the update will be deferred until its shutdown" >&2
+  echo " -S : send shutdown request to the server manager. This will only" >&2
+  echo "      work if no PalWorld server is actually running, therefore this" >&2
+  echo "      option is not meant to be used by the user but reserved for systemd" >&2
+  echo "" >&2
+  [ -n "$1" ] && error "$1"
+  exit 0
+}
 
 while [ -n "$1" ]
 do
@@ -51,15 +108,34 @@ do
     -x) DEBUG=Y
 	;;
     -S) echo "sending shutdown request..."
-	nc -u -w 5 127.0.0.1 $PORT <<<"SHUTDOWN"
+	socat STDIN,readbytes=8 UDP4-SENDTO:127.0.0.1:${PORT} <<<"SHUTDOWN"
 	exit 0
 	;;
-    *) echo "ERROR: unknown option $OPT"
+    -U) echo "sending update request..."
+	touch "${UPDATE_SEMAPHORE}"
+	chmod 777 "${UPDATE_SEMAPHORE}"
+	socat STDIN,readbytes=8 UDP4-SENDTO:127.0.0.1:${PORT} <<<"UPDATE  "
+	exit 0
+	;;
+    -h) usage
+	;;
+     *) usage "unknown option $OPT"
+	exit 99
+	;;
   esac  
 done
 
+ # We moved the security tests to this point to allow any user (including root) to use -S and -U
+(( PROC_UID == 0 )) && echo "ERROR: $ME cannot run from root except for -U or -S" && exit 9
+(( PROC_UID != CFG_UID )) && echo "ERROR: config file $CFG MUST be owned by ${PROC_USER}" && exit 9
+[ "${CFG_PROT}" != 600 ] && echo "ERROR: config file MUST be protected with mask 600" && exit 9
+
+[ $( ss -4 -u -a -n|fgrep "0.0.0.0:${PORT}"|wc -l ) -gt 0 ] && error "port ${PORT} already in use. aborting..." && exit 1
+
 [ $START_LOG = Y ] && echo "start logging..." && exec  >${LOG} 2>&1
 [ $DEBUG = Y ] && echo "debugging (-x) requested..." && set -x
+
+ParseTodayTime SERVER_UPDATE_SCHEDULE "${SERVER_UPDATE_TIME}" "NONE" "SERVER_UPDATE_TIME"
 
 STOP_SECONDS=()
 HAVE_STOP_TIME=N
@@ -85,6 +161,36 @@ CheckServer()
   [ -z "${SERVER_PID}" ] && return 1
   [ ! -d /proc/${SERVER_PID} ] && return 1
   fgrep -q "PalServer.sh" /proc/${SERVER_PID}/cmdline >/dev/null 2>&1 # Will also fail if process just killed
+}
+
+#----------------------------------------------------------------------
+RescheduleUpdate()
+{
+  [ "${SERVER_UPDATE_SCHEDULE}" = "NONE" ] && return 1
+
+  local now=$( date +%s )
+
+  while (( SERVER_UPDATE_SCHEDULE <= now ))
+  do
+    SERVER_UPDATE_SCHEDULE=$((SERVER_UPDATE_SCHEDULE+86400))
+  done
+  return 0
+}
+
+#----------------------------------------------------------------------
+# %1 : variable
+GetNow()
+{
+  eval $1=$( date +%s )
+}
+
+#----------------------------------------------------------------------
+UpdateServer()
+{
+  echo "checking for updates... ($( date ))"  
+  RescheduleUpdate
+  [ -f "${UPDATE_SEMAPHORE}" ] && rm "${UPDATE_SEMAPHORE}"
+  /usr/games/steamcmd +force_install_dir "${HOME}/Steam/steamapps/common/PalServer" +login anonymous +app_update 2394010 +quit
 }
 
 #----------------------------------------------------------------------
@@ -254,15 +360,33 @@ local sdepoch
 }
 
 SERVER_PID=""
+FORCE_UPDATE=N
 
 while true
 do
   SERVER_PID=""
+
+  # Update schedule reached ?
+  now=$( date +%s )
+  # Updateserver is potentially called 3 times below but a maximum of 1 call will
+  # actually be done as UpdateServer resets the schedule and semaphore
+  [ ${FORCE_UPDATE} = Y ] && FORCE_UPDATE=N && UpdateServer 
+  [ -f "${UPDATE_SEMAPHORE}" ] && UpdateServer
+  [ ${SERVER_UPDATE_SCHEDULE} != NONE ] && (( SERVER_UPDATE_SCHEDULE <= now )) && UpdateServer
   echo "waiting for incomming connection..."    
   if [ ${START_NOW} != Y ]
   then
-    CMD=$( nc -l -u -p $PORT -W 1 2>/dev/null | cut -c 1-8 | fgrep "SHUTDOWN" )
+    if RescheduleUpdate
+    then
+      GetNow NOW
+      TMO="-T $((SERVER_UPDATE_SCHEDULE-NOW+1))"
+    else
+      TMO=""
+    fi
+    CMD=$( socat -u $TMO UDP4-RECV:${PORT},readbytes=8 STDOUT 2>/dev/null | cut -c 1-8 | cat -t )
     [ "$CMD" = "SHUTDOWN" ] && echo "shutdown requested via packet. gracefully exiting..." && exit 0
+    [ "$CMD" = "UPDATE  " ] && echo "update requested via packet." && FORCE_UPDATE=Y && continue
+    [ -z "$CMD" ] && continue # This case was timeout, i.e. scheduled update
   fi
   START_NOW=N
   echo "connection sensed, starting server..."

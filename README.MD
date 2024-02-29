@@ -16,6 +16,11 @@ This is a script to automatically manage the Palworld dedicated server in order 
 
 The script has been tested on Ubuntu 22.04 but should also work on other distributions as long as they are more or less up-to-date and systemd based. The install script also exects
 
+## Required commands
+
+The following commands must be available on the server system:
+- systemctl (systemd)
+- socat
 # Palworld server setup
 
 ## Initial setup
@@ -32,7 +37,7 @@ In addition to the documentation above you have to enable the RCON server. This 
 
 - AdminPassword="password" # replace the word password by the password of your choice
 - RCONEnabled=True
-- RCONPort=25575 # This is not effective in V1.5 anymore (the script passes it via command line)
+- RCONPort=25575 # This is not effective in V1.5  (the script passes it via command line)
 
 ### Edit server manager config
 
@@ -64,6 +69,9 @@ The service can be installed with different flags. These flags are passed to the
 - -- : clear current flags
 
 By default the server is installed with the--L flag. If any flag is passed to the install.sh script it is used as service flag and overwrites the default flags. If you want pass no flag at all, use the -- flag.
+
+> [!NOTE]
+> run `./palworld_server_mgr.sh -h` in order to get usage help
 ## Start service
 
 ```sudo systemctl start palworld
