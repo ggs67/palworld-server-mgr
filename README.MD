@@ -1,0 +1,1 @@
+/home/steam/palworld_server_mgr/Palworld Server Manager/README.md
