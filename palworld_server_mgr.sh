@@ -112,7 +112,7 @@ do
 	exit 0
 	;;
     -U) echo "sending update request..."
-	touch "${UPDATE_SEMAPHORE}"
+	touch "${UPDATE_SEMAPHORE}" || exit 9
 	chmod 777 "${UPDATE_SEMAPHORE}"
 	socat STDIN,readbytes=8 UDP4-SENDTO:127.0.0.1:${PORT} <<<"UPDATE  "
 	exit 0

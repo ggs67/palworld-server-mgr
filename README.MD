@@ -105,3 +105,12 @@ The cleanup process will start by sending a SIGHUP to any PalServer process stil
 In the unlikely event that SIGKILL would also fail the service will exit !
 
 SIGHUP and SIGKILL takes 1 minute per process if both fail. Allowing 45 seconds for SIGHUP and 15 for SIGKILL
+
+# PalWorld server updates
+
+The service definition includes an automatic PalWorld server update check whenever the palworld service is started or restarted.
+
+In addition to this server updates can be triggered at a fix time every day via the SERVER_UPDATE_TIME, or can be triggered via `./palworld_server_mgr -U`
+either by the steam or root user.
+
+Note that if you attempt to trigger an update by any other user using the -U flag, you will most probably get a "permission denied" error trying to create the update semaphore and no update will be triggered. 
