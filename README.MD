@@ -56,5 +56,34 @@ The service can be installed with different flags. These flags are passed to the
 By default the server is installed with the--L flag. If any flag is passed to the install.sh script it is used as service flag and overwrites the default flags. If you want pass no flag at all, use the -- flag.
 ## Start service
 
-````sudo systemctl start palworld
+```sudo systemctl start palworld
 ```
+
+## Stop service
+
+```sudo systemctl stop palworld
+```
+
+> [!NOTE]
+> Note that stopping this service will also shutdown any started PalWorld server
+
+> [!NOTE]
+> The stop command may hang up to 5 minutes! In the worst case the service will required 1 minute to detect the shutdown signal allowing 2 minutes for ordinary shutdown. And an additional 2 minutes if SIGHUP/SIGKLILL has to be used (see [Details about shutdown])
+> 
+> I will try to workaround the 1 minute delay limitation without impacting performance
+
+# Details about shutdown
+
+When `systemctl stop` is used. a SHUTDOWN command is send to the service which is only received if currently no PalWorld server is running. In this case the service will imediatally exit.
+
+Otherwise systemd will send a SIGTERM to the service which will be detected as soon as the 60 second sleep is ending. The service waits for 60 seconds then checks if shutdown time has been reached and at the same time allows for shutdown signal catching.
+
+The shutdown process for `systemctl stop` and reaching of shutdown time is the same with the exception that the latter grants a delay of SHUTDOWN_DELAY (configured in config file) for users to logoff, while `systemctl stop` uses virtually no delay.
+
+The shutdown process first attempts to send a "ShutDown" command to the server using RCON allowing it 2 minutes to shutdown. If the server did exit or this timeout did elapse without the the server exiting a cleanup process is started to make sure all processes did exit.
+
+The cleanup process will start by sending a SIGHUP to any PalServer process still allowing some gracefull exit. If this still fails to shutdown the process a SIGKILL will be additionally send to force exit.
+
+In the unlikely event that SIGKILL would also fail the service will exit !
+
+SIGHUP and SIGKILL takes 1 minute per process if both fail. Allowing 45 seconds for SIGHUP and 15 for SIGKILL

@@ -121,7 +121,7 @@ Cleanup()
 {
 local pids=()
 local pid=
-local count=12
+local count=0
 
   while read LINE
   do
@@ -135,24 +135,24 @@ local count=12
     CheckProc $pid || continue # Already exited
     echo "  sending SIGHUP to $pid"
     kill -HUP ${pid}
-    count=12
+    count=9
     while ((count > 0))
     do
       count=$((count-1))
       CheckProc $pid || break	
-      sleep 10
+      sleep 5
     done
 
     if ((count==0))
     then
       echo "Failed to HUP palserver process $pid, foricng by SIGKILL"
       kill -KILL ${pid}
-      count=12
+      count=3
       while ((count > 0))
       do
         count=$((count-1))
         CheckProc $pid || break	
-        sleep 10
+        sleep 5
       done
       ((count==0)) && echo " SIGKILL also failed, exiting server manager. Need admin!" && exit 1
     fi
