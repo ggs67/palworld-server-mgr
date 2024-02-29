@@ -19,14 +19,21 @@ PROC_USER=$( stat --format %U "/proc/$$" )
 
 source "${CFG}"
 
-STOP_SECONDS=()
+IDLE_TIME=$((IDLE_TIME*60)) # Convert to seconds
 
 ################################################################################
+error()
+{
+  echo "$1" >&2
+  exit 1
+}
 
 ME=$( basename "$0" )
 SCRIPT="${DIR}/${ME}"
 SERVER_LOG="${DIR}/logs/palworld-server.log"
 LOG="${DIR}/logs/${ME}.log"
+
+[ ${#STOP_TIMES[@]} -ne 7 -a  ${#STOP_TIMES[@]} -ne 0 ] && error "STOP_TIMES must be an array of 0 or 7 entries"
 
 START_NOW=N
 START_LOG=N
@@ -54,15 +61,23 @@ done
 [ $START_LOG = Y ] && echo "start logging..." && exec  >${LOG} 2>&1
 [ $DEBUG = Y ] && echo "debugging (-x) requested..." && set -x
 
+STOP_SECONDS=()
+HAVE_STOP_TIME=N
 for X in ${STOP_TIMES[@]}
 do
+  # We set -1 for disabled entries, this requires no special handling for the first iteration (today)
+  # as today 00:00 -1 second will always lie before "now" and thus 
+  [ "${X:0:1}" = "-" ] && STOP_SECONDS+=( -1 ) && continue
   [[ ! "$X" =~ ^([0-9]+)[:]([0-9]+)$ ]] && echo "ERROR: invalid STOP_TIME $X" && exit 0
   H=${BASH_REMATCH[1]}
   M=${BASH_REMATCH[2]}
   [ $H -lt 0 -o $H -gt 23 ] && echo "ERROR: invalid STOP_TIME $X" && exit 0
   [ $M -lt 0 -o $M -gt 59 ] && echo "ERROR: invalid STOP_TIME $X" && exit 0
   STOP_SECONDS+=( $((H*3600+M*60)) )
+  HAVE_STOP_TIME=Y
 done
+
+[ ${HAVE_STOP_TIME} = N ] && STOP_SECONDS=() # Handle case where all times are disabled
 
 #----------------------------------------------------------------------
 CheckServer()
@@ -81,7 +96,7 @@ local delay=$1
   [ -z "${delay}" ] && delay=${SHUTDOWN_DELAY} 
   if CheckServer
   then
-    echo "scheduling shutdown for in ${SHUTDOWN_DELAY} seconds..."
+    echo "scheduling shutdown for in ${delay} seconds..."
     ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShutDown ${delay}" || break
     sleep ${delay}
     # Allow 2 minutes for server to shutdown
@@ -161,6 +176,27 @@ local count=0
 
 
 #----------------------------------------------------------------------
+IDLE_LIMIT=0
+CheckIdle()
+{
+local now=$( date +%s )
+    
+# We check plaer list including heading, this allows to detect errors (if header not present)
+local players=$( ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShowPlayers" | wc -l )
+
+  if (( players == 1 ))
+  then
+    # No player connected 
+    (( IDLE_LIMIT == 0 )) && IDLE_LIMIT=$((now+IDLE_TIME)) && return 1
+    (( now >= IDLE_LIMIT )) && return 0
+  else
+   # Player connected (or rcon failed)
+   IDLE_LIMIT=$((now+IDLE_TIME))
+  fi
+  return 1
+}
+
+#----------------------------------------------------------------------
 wait_for_shutdown_time()
 {
 local now=$( date +%s)
@@ -169,32 +205,52 @@ local depoch=$( date -d "${date}" +%s )
 local wd=$( date -d "@${now}" +%w)
 local sdtime=${STOP_TIME[$wd]}
 local sdsecs=${STOP_SECONDS[$wd]}
-local sdepoch=$((depoch+sdsecs))
+local sdepoch
 
-  if (( sdepoch < now ))
+  if [ ${HAVE_STOP_TIME} = Y ]
   then
-    # Get next day
-    depoch=$((depoch+86400))
-    wd=$( date -d "@${depoch}" +%w)
-    sdtime=${STOP_TIME[$wd]}
-    sdsecs=${STOP_SECONDS[$wd]}
     sdepoch=$((depoch+sdsecs))
+    # Preparation of STOP_SECONDS makes sure that we have at least one valid entry, or HAVE_STOP_TIME=N
+    while true
+    do
+      ((sdepoch > now)) && break # we are set
+      # Get next day
+      depoch=$((depoch+86400))
+      wd=$( date -d "@${depoch}" +%w)
+      sdtime=${STOP_TIME[$wd]}
+      sdsecs=${STOP_SECONDS[$wd]}
+      (( sdsecs < 0 )) && continue # Do not update sdepoch and force next day for disabled days
+      sdepoch=$((depoch+sdsecs))
+    done
+  else
+    # Disable sdepoch if we have no stop times
+    sdepoch=0
   fi
-  local sleep=$((sdepoch-now))
-  local sleep_time=$( date -d "@${sdepoch}" )
-  echo "waiting for ${sleep} seconds until ${sleep_time}"
-  wait=60
-  while (( now < sdepoch ))
+  
+  if [ ${HAVE_STOP_TIME} = Y ]
+  then
+    local sleep=$((sdepoch-now))
+    local sleep_time=$( date -d "@${sdepoch}" )
+    echo "waiting for ${sleep} seconds until ${sleep_time}"
+  fi
+  local wait=60
+  local override=""
+  while true
   do
-    sleep $wait
+    sleep $wait &
+    wait $!
     now=$( date +%s )      
-    (( now >= sdepoch )) && break
+    [ ${HAVE_STOP_TIME} = Y ] && (( now >= sdepoch )) && break
     CheckServer || break
-    sleep=$((sdepoch-now))
-    (( sleep < 60 )) && wait=5 
+    [ ${IDLE_TIME} -gt 0 ] && CheckIdle ${IDLE_TIME} && echo "Server ideling for ${IDLE_TIME} seconds. Shutting down..." && override=1 && break
+    if [ ${HAVE_STOP_TIME} = Y ]
+    then
+      sleep=$((sdepoch-now))
+      (( sleep < 60 )) && wait=5
+    fi
   done
   echo "$( date ): woke up to shutdown server (or beacuse it is missing)"
-  Shutdown
+  Shutdown ${override}
 }
 
 SERVER_PID=""
@@ -209,7 +265,8 @@ do
     [ "$CMD" = "SHUTDOWN" ] && echo "shutdown requested via packet. gracefully exiting..." && exit 0
   fi
   START_NOW=N
-  echo "connection sensed, starting server..."    
+  echo "connection sensed, starting server..."
+  IDLE_LIMIT=0 # reset ideling
   /home/steam/Steam/steamapps/common/PalServer/PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS -RCONPort=${RCON_PORT} >${SERVER_LOG} 2>&1 &
   SERVER_PID="$!"
   echo "server pid=${SERVER_PID}"
