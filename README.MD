@@ -56,19 +56,37 @@ To add steam to the sudo group execute the following command using `root` user:
 > I expect this script to be mostly used for private systems. For systems where security is a concern you may want to add a special more restrictive rules to the sudoers to allow only the required commands
 ### Install the service
 
+#### Configuration service file
+
+The service installer configuration file install.conf allows to configure the service name and options.
+
+Please note that the service name must be specified without the trailing ".service" and if it is changed after the service has been installed, the old service must be removed manually !!!
+
+While the options may be added here as a bash array, it may be easier to just specify the options on the install.sh script command line (after a --) , this will
+automatically update the config file as well
+
+#### Install
+
 The script install.sh should be run once. It will download the rcon-cli binary for use by the server manager and install the PalWorld service in systemd
 
 > [!NOTE]
 >Support for deinstallation has yet to be added 
-#### Service flags
+#### Installation parameters
 
-The service can be installed with different flags. These flags are passed to the service when started. Currently the following fags are supported:
+>[!NOTE] Synopsis
+>./install.sh \<install-options\> [-- \<service-options\>]
 
-- -L : log server manager messages to the logs directory
-- -x : include debug trace in the log
-- -- : clear current flags
+##### Install options:
 
-By default the server is installed with the--L flag. If any flag is passed to the install.sh script it is used as service flag and overwrites the default flags. If you want pass no flag at all, use the -- flag.
+- -R : deinstall service
+- -S : install original server service (not using pal server manager)
+
+##### Service flags
+
+Flags added after a -- are directly passed on to the server manager service.
+See `./palworld_server_mgr -h` for details and which options can be passed
+to the service.
+
 
 > [!NOTE]
 > run `./palworld_server_mgr.sh -h` in order to get usage help

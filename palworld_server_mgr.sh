@@ -23,11 +23,53 @@ SERVER_CMD="PalServer-Linux"
 ################################################################################
 error()
 {
-  echo ""
+  echo "" >&2
   echo "ERROR: $1" >&2
-  echo ""
+  echo "" >&2
   exit 1
 }
+
+#-------------------------------------------------------------------------------
+check_int()
+{
+  [[ ! "$1" =~ [0-9]+ ]] && error "$2 requires an integer value, got '$1'"
+}
+
+#-------------------------------------------------------------------------------
+MAXLOGLEVEL=4
+LOGLEVEL=${MAXLOGLEVEL}
+INTERACTIVE=N
+log()
+{
+  [ $1 -gt $LOGLEVEL ] && return 0
+  echo "$2"
+}
+
+log_printf()
+{
+  local level=$1
+  local text    
+  shift
+  printf -v text "$@"
+  log $level "$text"
+}
+
+#-------------------------------------------------------------------------------
+logi()
+{
+  [ $INTERACTIVE != Y ] && log $1 "$2" && return 0
+  echo "$2"
+}
+
+logi_printf()
+{
+  local level=$1
+  local text    
+  shift
+  printf -v text "$@"
+  logi $level "$text"
+}
+
 
 ME=$( basename "$0" )
 SCRIPT="${DIR}/${ME}"
@@ -111,13 +153,19 @@ local _time
 usage()
 {
   echo "" >&2
-  echo "usage: ${ME} [-L] [-x] [-N] - run server manager interactively" >&2
-  echo "       ${ME} [-S <delay>|-U|-u]        - send commands to running manager" >&2
-  echo "       ${ME} [-h] - to display this help" >&2
+  echo "usage: ${ME} [-L] [-l <n>] [-x] [-N] - run server manager interactively" >&2
+  echo "       ${ME} [-S <delay>|-U|-u|-P]   - send commands to running manager" >&2
+  echo "       ${ME} [-h]                    - to display this help" >&2
   echo "" >&2
+  echo " Service flags (can be passed via install.sh)" >&2
+  echo " --------------------------------------------" >&2  
   echo " -L : log into log file in logs subdirectory instead of stdout" >&2
   echo "      e.g. system journal" >&2
+  echo " -l <n> : set log level (0-4)"
   echo " -x : enable debugging outputting each script line as executed" >&2
+  echo "" >&2
+  echo " Interactive flags (cannot be passed via install.sh)" >&2
+  echo " ---------------------------------------------------" >&2
   echo " -N : start server immediatally without waiting for an incomming" >&2
   echo "      connection" >&2
   echo "" >&2
@@ -186,8 +234,8 @@ local pstatus
   [ -z "${delay}" ] && delay=${SHUTDOWN_DELAY} 
   if CheckServer
   then
-    CheckPlayersOnline || { echo "no users online, shutting down immediatally..." ; delay=1 ; }
-    echo "scheduling shutdown for in ${delay} seconds..."
+    CheckPlayersOnline || { logi 1 "no users online, shutting down immediatally..." ; delay=1 ; }
+    logi 1 "scheduling shutdown for in ${delay} seconds..."
     ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShutDown ${delay}" || break
     # Wait for shutdown while checking for users
     while (( delay > 0 ))
@@ -203,10 +251,10 @@ local pstatus
         CheckPlayersOnline
 	pstatus=$?
 	secs_to_time ${delay}
-	printf "%8s remaining, still ${ONLINE_PLAYERS} players online\n" "${TIME}"
+	logi_printf 2 "%8s remaining, still ${ONLINE_PLAYERS} players online\n" "${TIME}"
 	(( pstatus == 0 )) && continue # Still players online
         delay=1
-        echo "all players left, re-scheduling shutdown for in ${delay} seconds..."
+        logi 1 "all players left, re-scheduling shutdown for in ${delay} seconds..."
         ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShutDown ${delay}" || break
       fi
     done
@@ -214,12 +262,12 @@ local pstatus
     count=12
     while (( count > 0 ))
     do
-      echo "  waiting for server exit..."
+      logi 2 "  waiting for server exit..."
       count=$((count-1))
       CheckServer || break
       sleep 10
     done
-    ((count==0)) && echo "ERROR: server shutdown failed !" 
+    ((count==0)) && logi 0 "ERROR: server shutdown failed !" 
     Cleanup
   else
     Cleanup
@@ -229,7 +277,7 @@ local pstatus
 #----------------------------------------------------------------------
 SigTerm()
 {
-  echo "SIGTERM received, shutting down"
+  log 1 "SIGTERM received, shutting down"
   Shutdown 10
   exit 0
 }
@@ -259,7 +307,7 @@ local count=0
   for pid in ${pids[@]}
   do
     CheckProc $pid || continue # Already exited
-    echo "  sending SIGHUP to $pid"
+    logi 3 "  sending SIGHUP to $pid"
     kill -HUP ${pid}
     count=9
     while ((count > 0))
@@ -271,7 +319,7 @@ local count=0
 
     if ((count==0))
     then
-      echo "Failed to HUP palserver process $pid, foricng by SIGKILL"
+      logi 1 "Failed to HUP palserver process $pid, foricng by SIGKILL"
       kill -KILL ${pid}
       count=3
       while ((count > 0))
@@ -280,7 +328,7 @@ local count=0
         CheckProc $pid || break	
         sleep 5
       done
-      ((count==0)) && echo " SIGKILL also failed, exiting server manager. Need admin!" && exit 1
+      ((count==0)) && logi 0 " SIGKILL also failed, exiting server manager. Need admin!" && exit 1
     fi
   done  
 }
@@ -303,11 +351,16 @@ do
         ;;
     -L) START_LOG=Y
 	;;
+    -l) LOGLEVEL=$1
+	shift
+	check_int "${LOGLEVEL}" "-l option"
+	;;
     -x) DEBUG=Y
 	;;
     -S) shut_mgr=Y
 	;&
     -s) [ -z "${shut_mgr}" ] && shut_mgr=N
+	INTERACTIVE=Y
 	SHUTDOWN_DELAY=$1
 	shift
 	[[ ! "${SHUTDOWN_DELAY}" =~ [0-9]+ ]] && error "-S option requires integer delay in seconds, got ${SHUTDOWN_DELAY}"
@@ -337,13 +390,15 @@ do
         esac
 	exit 0
 	;;
-    -U) echo "sending update request..."
+    -U) INTERACTIVE=Y
+	echo "sending update request..."
 	touch "${UPDATE_SEMAPHORE}" || exit 9
 	chmod 777 "${UPDATE_SEMAPHORE}"
-	socat STDIN,readbytes=8 UDP4-SENDTO:127.0.0.1:${PORT} <<<"UPDATE  "
+	CheckOtherServer || socat STDIN,readbytes=8 UDP4-SENDTO:127.0.0.1:${PORT} <<<"UPDATE  "
 	exit 0
 	;;
-    -P) CheckOtherServer
+    -P) INTERACTIVE=Y
+	CheckOtherServer
         _status=$?
 	echo ""
 	case ${_status} in
@@ -374,8 +429,8 @@ done
 
 [ $( ss -4 -u -a -n|fgrep "0.0.0.0:${PORT}"|wc -l ) -gt 0 ] && error "port ${PORT} already in use. aborting..." && exit 1
 
-[ $START_LOG = Y ] && echo "start logging..." && exec  >${LOG} 2>&1
-[ $DEBUG = Y ] && echo "debugging (-x) requested..." && set -x
+[ $START_LOG = Y ] && log 1 "start logging..." && exec  >${LOG} 2>&1
+[ $DEBUG = Y ] && log 0 "debugging (-x) requested..." && LOGLEVEL=${MAXLOGLEVEL} && set -x
 
 ParseTodayTime SERVER_UPDATE_SCHEDULE "${SERVER_UPDATE_TIME}" "NONE" "SERVER_UPDATE_TIME"
 RescheduleUpdate # Make sure schedule is in the future
@@ -408,7 +463,7 @@ GetNow()
 #----------------------------------------------------------------------
 UpdateServer()
 {
-  echo "checking for updates... ($( date ))"  
+  logi 2 "checking for updates... ($( date ))"  
   RescheduleUpdate
   [ -f "${UPDATE_SEMAPHORE}" ] && rm "${UPDATE_SEMAPHORE}"
   /usr/games/steamcmd +force_install_dir "${HOME}/Steam/steamapps/common/PalServer" +login anonymous +app_update 2394010 +quit
@@ -416,6 +471,7 @@ UpdateServer()
 
 #----------------------------------------------------------------------
 IDLE_LIMIT=0
+PLAYERS=0
 CheckIdle()
 {
 local now=$( date +%s )
@@ -423,14 +479,17 @@ local now=$( date +%s )
 # We check plaer list including heading, this allows to detect errors (if header not present)
 local players=$( ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShowPlayers" | wc -l )
 
-  if (( players == 1 ))
+  players=$((players-1))
+  if (( players == 0 ))
   then
-    # No player connected 
+    # No player connected
+    (( PLAYERS > 0 )) && PLAYERS=0 && logi 3 "$(date) server started ideling"
     (( IDLE_LIMIT == 0 )) && IDLE_LIMIT=$((now+IDLE_TIME)) && return 1
     (( now >= IDLE_LIMIT )) && return 0
   else
-   # Player connected (or rcon failed)
-   IDLE_LIMIT=$((now+IDLE_TIME))
+    # Player connected (or rcon failed)
+    (( players != PLAYERS )) && PLAYERS=${players} && logi 3 "$(date) ${players} players now online"
+    IDLE_LIMIT=$((now+IDLE_TIME))
   fi
   return 1
 }
@@ -470,10 +529,11 @@ local sdepoch
   then
     local sleep=$((sdepoch-now))
     local sleep_time=$( date -d "@${sdepoch}" )
-    echo "waiting for ${sleep} seconds until ${sleep_time}"
+    log 2 "waiting for ${sleep} seconds until ${sleep_time}"
   fi
   local wait=60
   local override=""
+  local players=0
   while true
   do
     sleep $wait &
@@ -481,14 +541,19 @@ local sdepoch
     now=$( date +%s )      
     [ ${HAVE_STOP_TIME} = Y ] && (( now >= sdepoch )) && break
     CheckServer || break
-    [ ${IDLE_TIME} -gt 0 ] && CheckIdle ${IDLE_TIME} && echo "Server ideling for ${IDLE_TIME} seconds. Shutting down..." && override=1 && break
+    if (( LOGLEVEL >=4 ))
+    then
+      CheckPlayersOnline
+      (( players != ONLINE_PLAYERS )) && log 4 "$(date) online payers ${players} -> ${ONLINE_PLAYERS}" && players=${ONLINE_PLAYERS}
+    fi
+    [ ${IDLE_TIME} -gt 0 ] && CheckIdle ${IDLE_TIME} && log 2 "Server ideling for ${IDLE_TIME} seconds. Shutting down..." && override=1 && break
     if [ ${HAVE_STOP_TIME} = Y ]
     then
       sleep=$((sdepoch-now))
       (( sleep < 60 )) && wait=5
     fi
   done
-  echo "$( date ): woke up to shutdown server (or beacuse it is missing)"
+  log 1 "$( date ): woke up to shutdown server (or beacuse it is missing)"
   Shutdown ${override}
 }
 
@@ -506,33 +571,33 @@ do
   [ ${FORCE_UPDATE} = Y ] && FORCE_UPDATE=N && UpdateServer 
   [ -f "${UPDATE_SEMAPHORE}" ] && UpdateServer
   [ ${SERVER_UPDATE_SCHEDULE} != NONE ] && (( SERVER_UPDATE_SCHEDULE <= now )) && UpdateServer
-  echo "waiting for incomming connection..."    
+  log 1 "waiting for incomming connection..."    
   if [ ${START_NOW} != Y ]
   then
     if RescheduleUpdate
     then
       GetNow NOW
       TMO="-T $((SERVER_UPDATE_SCHEDULE-NOW+1))"
-      echo "  scheduling update check for $( date -d @${SERVER_UPDATE_SCHEDULE} )"
+      log 2 "  scheduling update check for $( date -d @${SERVER_UPDATE_SCHEDULE} )"
     else
       TMO=""
     fi
     CMD=$( socat -u $TMO UDP4-RECV:${PORT},readbytes=8 STDOUT 2>/dev/null | cut -c 1-8 | cat -t )
-    [ "$CMD" = "SHUTDOWN" ] && echo "shutdown requested via packet. gracefully exiting..." && exit 0
-    [ "$CMD" = "UPDATE  " ] && echo "update requested via packet." && FORCE_UPDATE=Y && continue
+    [ "$CMD" = "SHUTDOWN" ] && log 2 "shutdown requested via packet. gracefully exiting..." && exit 0
+    [ "$CMD" = "UPDATE  " ] && log 2 "update requested via packet." && FORCE_UPDATE=Y && continue
     [ -z "$CMD" ] && continue # This case was timeout, i.e. scheduled update
   fi
   START_NOW=N
-  echo "connection sensed, starting server..."
+  log 1 "$(date) connection sensed, starting server..."
   IDLE_LIMIT=0 # reset ideling
   /home/steam/Steam/steamapps/common/PalServer/PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS -RCONPort=${RCON_PORT} >${SERVER_LOG} 2>&1 &
   SERVER_PID="$!"
-  echo "server pid=${SERVER_PID}"
+  log 3 "server pid=${SERVER_PID}"
   wait_for_shutdown_time
   if [ -f "${SHUTDOWN_SEMAPHORE}" ]
   then
     rm -f "${SHUTDOWN_SEMAPHORE}"
-    echo "shutdown requested via semaphorre. gracefully exiting..."
+    log 1 "shutdown requested via semaphorre. gracefully exiting..."
     exit 0
   fi  
 done
