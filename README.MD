@@ -69,8 +69,6 @@ automatically update the config file as well
 
 The script install.sh should be run once. It will download the rcon-cli binary for use by the server manager and install the PalWorld service in systemd
 
-> [!NOTE]
->Support for deinstallation has yet to be added 
 #### Installation parameters
 
 >[!NOTE] Synopsis
@@ -80,7 +78,22 @@ The script install.sh should be run once. It will download the rcon-cli binary f
 
 - -R : deinstall service
 - -S : install original server service (not using pal server manager)
+- -w : install palworld-worldoptions
 
+##### palworld-worldoptions
+
+see: [github.com/legoduded/palworld-worldoptions](https://github.com/legoduded/palworld-worldoptions)
+
+PalWorld dedicated server fails to load some settings (like currently `BaseCampWorkerMaxNum`) from the servers ini file while it was found that these are loaded from an optional UE save file.
+
+Michael Phelan (aka. legoduded) has release a tool on github that can generate such a save file from an existing ini file (link above).
+
+This tool can be automatically installed (in private, not system directory) using the -w option on the install.sh script. This will also install the required uesave-re repository.
+
+Now editing the ini file using the server manager (i.e. -c option) will also generate the corresponding WorldOption.sav file.
+
+>[!IMPORTANT] Credits
+>Full credits for the palworld-worldoptions tool go to Michael Phelan (aka. legoduded) for the tool and to Truman Kilen (aka. trumank) for the uesave-rs tool used by palworld-worldoptions to write the save file
 ##### Service flags
 
 Flags added after a -- are directly passed on to the server manager service.

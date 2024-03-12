@@ -28,6 +28,7 @@ local rc="/etc/systemd/system/${SERVICE}"
 
 ORIGINAL_SERVICE=N
 REMOVE_SERVICE=N
+PALWORLD_OPTIONS_TOOL=N
 HELP=N
 ADDITIONAL_OPTION_ERROR=
 SERVICE_ARGS_ERROR=
@@ -38,6 +39,7 @@ usage()
   echo "usage: ${ME} -R|-O [-- <server-mgr-options>]" >&2
   echo "" >&2
   echo " -h : this help"
+  echo " -w : enable palworld-worldoptions"
   echo " -R : remove ${SERVICE}" >&2
   echo " -O : install original palworld service without server manager" >&2
   echo "" >&2
@@ -57,6 +59,35 @@ check_additional()
   (( COUNT < 2 )) && return 0
   echo "ERROR: ${ADDITIONAL_OPTION_ERROR}"
   exit 1
+}
+
+#--------------------------------------------------------------------------
+TOOLDIR=${DIR}/tools
+[ ! -d "${TOOLDIR}" ] && mkdir "${TOOLDIR}"
+git_tool_install()
+{
+local url="$1"
+local tool="${url##*/}"
+  tool="${tool%.git}"
+  echo "downloading ${tool}..."
+local tooldir="${TOOLDIR}/${tool}"
+  [ ${tooldir} = "/" ] && echo "DANGEROUS BUG: tooldir=${tooldir}" && exit 50
+  X=$( sed -E 's/^.*(.)/\1/' <<<"${tooldir}" )
+  [ ${X} = "/" ] && echo "DANGEROUS BUG: tooldir=${tooldir}" && exit 50
+
+  [ -e "${tooldir}" ] && rm -Rf "${tooldir}"
+  git -C "${TOOLDIR}" clone "${url}" || exit 1
+}
+
+#--------------------------------------------------------------------------
+git_tool_update()
+{
+local tool="$1"
+local tooldir="${TOOLDIR}/${tool}"
+
+  [ ! -d "${tooldir}" ] && return 0
+  echo "updating ${tool}..."
+  git -C "${tooldir}" fetch || exit 1
 }
 
 if [ $# -gt 0 ]
@@ -96,6 +127,8 @@ then
 	  check_additional
 	  HELP=Y
 	  ;;
+	-w) PALWORLD_OPTIONS_TOOL=Y
+	    ;;
 	*) usage "unknwon install option $PAR"
       esac
     else
@@ -172,6 +205,20 @@ else
 fi
 
 [ ${ACTIVE} = Y ] && echo "shutting down currently active PalServer..." && sudo systemctl stop ${SERVICE}
+
+# palworld-worldoptions
+PWWO=palworld-worldoptions
+
+if [ ${PALWORLD_OPTIONS_TOOL} = Y ]
+then
+  sudo apt install -y cargo
+  git_tool_install https://github.com/trumank/uesave-rs.git
+  git_tool_install https://github.com/legoduded/palworld-worldoptions.git
+  ( cd "${TOOLDIR}/uesave-rs" && cargo build ) || exit 1  
+else
+  git_tool_update uesave-rs.git
+  git_tool_update palworld-worldoptions.git
+fi
 
 SERVICE_FILE=${DIR}/palworld.service
 [ ${ORIGINAL_SERVICE} = Y ] && SERVICE_FILE=${DIR}/palworld.orig.service

@@ -6,6 +6,7 @@ ME=$( basename "$0" )
 DIR=$( dirname "$0" )
 DIR=$( realpath "$DIR" )
 CFG="${DIR}/${ME%.sh}.conf"
+TOOLSDIR="${DIR}/tools"
 
 [ ! -f "${CFG}" ] && echo "ERROR: no config file ${CFG}" && exit 9
 CFG_PROT=$( stat --format %a "${CFG}" )
@@ -19,6 +20,8 @@ IDLE_TIME=$((IDLE_TIME*60)) # Convert to seconds
 
 LISTENER_CMD="socat"
 SERVER_CMD="PalServer-Linux"
+
+STEAM_PALSERVER="${HOME}/Steam/steamapps/common/PalServer/"
 
 ################################################################################
 error()
@@ -35,6 +38,16 @@ check_int()
   [[ ! "$1" =~ [0-9]+ ]] && error "$2 requires an integer value, got '$1'"
 }
 
+timestamp()
+{
+  if [ -z "$1" ]
+  then	
+    date +"${TSFMT}"
+  else
+    date -d "$1" +"${TSFMT}"
+  fi
+}
+
 #-------------------------------------------------------------------------------
 MAXLOGLEVEL=4
 LOGLEVEL=${MAXLOGLEVEL}
@@ -45,6 +58,12 @@ log()
   echo "$2"
 }
 
+logT()
+{
+  log "$1" "$2 ($(timestamp))"
+}
+
+
 log_printf()
 {
   local level=$1
@@ -54,20 +73,44 @@ log_printf()
   log $level "$text"
 }
 
-#-------------------------------------------------------------------------------
-logi()
-{
-  [ $INTERACTIVE != Y ] && log $1 "$2" && return 0
-  echo "$2"
-}
-
-logi_printf()
+logT_printf()
 {
   local level=$1
   local text    
   shift
   printf -v text "$@"
-  logi $level "$text"
+  logT $level "$text"
+}
+
+#-------------------------------------------------------------------------------
+logI()
+{
+  [ $INTERACTIVE != Y ] && log $1 "$2" && return 0
+  log 0 "$2"
+}
+
+logTI()
+{
+  [ $INTERACTIVE != Y ] && logT $1 "$2" && return 0
+  logT 0 "$2"
+}
+
+logI_printf()
+{
+  local level=$1
+  local text    
+  shift
+  printf -v text "$@"
+  logI $level "$text"
+}
+
+logTI_printf()
+{
+  local level=$1
+  local text    
+  shift
+  printf -v text "$@"
+  logTI $level "$text"
 }
 
 
@@ -86,6 +129,7 @@ SHUTDOWN_SEMAPHORE="${DIR}/.shutdown_mgr"
 START_NOW=N
 START_LOG=N
 DEBUG=N
+WORLDOPTIONS=N
 
 #----------------------------------------------------------------------
 # %1 : variable
@@ -153,7 +197,7 @@ local _time
 usage()
 {
   echo "" >&2
-  echo "usage: ${ME} [-L] [-l <n>] [-x] [-N] - run server manager interactively" >&2
+  echo "usage: ${ME} [-L] [-l <n>] [-x] [-N] [-w]  - run server manager interactively" >&2
   echo "       ${ME} [-S <delay>|-U|-u|-P]   - send commands to running manager" >&2
   echo "       ${ME} [-h]                    - to display this help" >&2
   echo "" >&2
@@ -178,13 +222,19 @@ usage()
   echo " -S <delay> : send shutdown request to the server manager. If the server is" >&2
   echo "              curently running a shutdown request with given delay is issued" >&2
   echo "              IMPORTANT: this option also shutds down the server manager !" >&2
+  echo " -c : edit config" >&2
+  echo "      NODE: config can only be edited when server is down, because otherwise" >&2
+  echo "            it will be overwritten by the server" >&2
+  echo " -w : save world-options as save file (see github legoduded/palworld-worldoptions" >&2
+  echo "      for details." >&2
+  echo "      IMPORTANT: install.sh must have been run with the -w option !" >&2
   echo "" >&2
   [ -n "$1" ] && error "$1"
   exit 0
 }
 
 #----------------------------------------------------------------------
-# Check server which is nopt owned by our process
+# Check server which is not owned by our process
 CheckOtherServer()
 {
 local _socket=$( ss -u -a -n -p|grep -E "[[:space:]][0-9.]+[:]${PORT}[[:space:]]+[0-9.]+[:][*]" )
@@ -234,8 +284,8 @@ local pstatus
   [ -z "${delay}" ] && delay=${SHUTDOWN_DELAY} 
   if CheckServer
   then
-    CheckPlayersOnline || { logi 1 "no users online, shutting down immediatally..." ; delay=1 ; }
-    logi 1 "scheduling shutdown for in ${delay} seconds..."
+    CheckPlayersOnline || { logI 1 "no users online, shutting down immediatally..." ; delay=1 ; }
+    logI 1 "scheduling shutdown for in ${delay} seconds..."
     ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShutDown ${delay}" || break
     # Wait for shutdown while checking for users
     while (( delay > 0 ))
@@ -251,10 +301,10 @@ local pstatus
         CheckPlayersOnline
 	pstatus=$?
 	secs_to_time ${delay}
-	logi_printf 2 "%8s remaining, still ${ONLINE_PLAYERS} players online\n" "${TIME}"
+	logI_printf 2 "%8s remaining, still ${ONLINE_PLAYERS} players online\n" "${TIME}"
 	(( pstatus == 0 )) && continue # Still players online
         delay=1
-        logi 1 "all players left, re-scheduling shutdown for in ${delay} seconds..."
+        logI 1 "all players left, re-scheduling shutdown for in ${delay} seconds..."
         ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShutDown ${delay}" || break
       fi
     done
@@ -262,12 +312,12 @@ local pstatus
     count=12
     while (( count > 0 ))
     do
-      logi 2 "  waiting for server exit..."
+      logI 2 "  waiting for server exit..."
       count=$((count-1))
       CheckServer || break
       sleep 10
     done
-    ((count==0)) && logi 0 "ERROR: server shutdown failed !" 
+    ((count==0)) && logI 0 "ERROR: server shutdown failed !" 
     Cleanup
   else
     Cleanup
@@ -307,7 +357,7 @@ local count=0
   for pid in ${pids[@]}
   do
     CheckProc $pid || continue # Already exited
-    logi 3 "  sending SIGHUP to $pid"
+    logI 3 "  sending SIGHUP to $pid"
     kill -HUP ${pid}
     count=9
     while ((count > 0))
@@ -319,7 +369,7 @@ local count=0
 
     if ((count==0))
     then
-      logi 1 "Failed to HUP palserver process $pid, foricng by SIGKILL"
+      logI 1 "Failed to HUP palserver process $pid, foricng by SIGKILL"
       kill -KILL ${pid}
       count=3
       while ((count > 0))
@@ -328,7 +378,7 @@ local count=0
         CheckProc $pid || break	
         sleep 5
       done
-      ((count==0)) && logi 0 " SIGKILL also failed, exiting server manager. Need admin!" && exit 1
+      ((count==0)) && logI 0 " SIGKILL also failed, exiting server manager. Need admin!" && exit 1
     fi
   done  
 }
@@ -342,11 +392,88 @@ CheckServer()
   fgrep -q "${SERVER_CMD}" /proc/${SERVER_PID}/cmdline >/dev/null 2>&1 # Will also fail if process just killed
 }
 
+#----------------------------------------------------------------------
+INIFILE=${HOME}/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+edit_config()
+{
+  CheckOtherServer && echo "server must be shutdown prior to editing the copnfig file !" && return 1
+  ${EDITOR} "${INIFILE}"
+  worldoptions -o
+}
+
+#----------------------------------------------------------------------
+checkdir()
+{
+local optional=N
+  [ "$1" = "-o" ] && optional=Y && shift
+  [ -d "$1" ] && return 0
+  [ ${optional} = Y ] && return 1
+  echo "ERROR: missing directory $1"    
+  echo "ERROR: $2" >&2
+  exit 1
+}
+
+#----------------------------------------------------------------------
+checkexe()
+{
+local optional=N
+  [ "$1" = "-o" ] && optional=Y && shift
+  [ -x "$1" ] && return 0
+  [ ${optional} = Y ] && return 1
+  echo "ERROR: $1 is not en executable"    
+  echo "ERROR: $2" >&2
+  exit 1
+}
+
+#----------------------------------------------------------------------
+checkfile()
+{
+local optional=N
+  [ "$1" = "-o" ] && optional=Y && shift
+  [ -f "$1" ] && return 0
+  [ ${optional} = Y ] && return 1
+  echo "ERROR: missing file $1"    
+  echo "ERROR: $2" >&2
+  exit 1
+}
+
+#----------------------------------------------------------------------
+# accepts -o option: optional
+worldoptions()
+{
+local PWWODIR="${TOOLSDIR}/palworld-worldoptions"
+local UESAVEDIR="${TOOLSDIR}/uesave-rs"
+local UESAVE=("${UESAVEDIR}/target/"*"/uesave")
+local PWWO="${PWWODIR}/src/main.py"
+local target
+
+  UESAVE="${UESAVE[0]}"
+  checkdir $1 "${PWWODIR}" "palworld-worldoptions not installed, please run ./install.sh -w" || return 1
+  checkdir $1 "${UESAVEDIR}" "palworld-worldoptions requires uesave-rs, please run ./install.sh -w" || return 1
+  checkexe $1 "${UESAVE}" "looks like uesave-rs was not compiled, please run ./install.sh -w" || return 1
+  checkfile $1 "${PWWO}" "palworld-worldoptions main.py missing" || return 1
+
+  echo "generating WorldOption.sav..."
+  python3 "${PWWO}" --uesave "${UESAVE}" --output "${DIR}/" "${INIFILE}" || exit 1
+  echo "distributing WorldOption.sav..."
+  while read target
+  do
+    target=$( dirname "${target}" )
+    echo "  ...to ${target}"      
+    cp "${DIR}/WorldOption.sav" "${target}" && exit 1
+  done < <( find "${STEAM_PALSERVER}" -name "LevelMeta.sav" )
+  echo "done"
+}
+
+
 while [ -n "$1" ]
 do
   OPT="$1"
   shift
   case $OPT in
+    -c) edit_config
+        exit $?
+	;;
     -N) START_NOW=Y
         ;;
     -L) START_LOG=Y
@@ -354,6 +481,9 @@ do
     -l) LOGLEVEL=$1
 	shift
 	check_int "${LOGLEVEL}" "-l option"
+	;;
+    -w) worldoptions
+	exit $?
 	;;
     -x) DEBUG=Y
 	;;
@@ -463,7 +593,7 @@ GetNow()
 #----------------------------------------------------------------------
 UpdateServer()
 {
-  logi 2 "checking for updates... ($( date ))"  
+  logTI 2 "checking for updates..."  
   RescheduleUpdate
   [ -f "${UPDATE_SEMAPHORE}" ] && rm "${UPDATE_SEMAPHORE}"
   /usr/games/steamcmd +force_install_dir "${HOME}/Steam/steamapps/common/PalServer" +login anonymous +app_update 2394010 +quit
@@ -483,12 +613,12 @@ local players=$( ${DIR}/rcon -a 127.0.0.1:${RCON_PORT} -p "${RCON_PASS}" "ShowPl
   if (( players == 0 ))
   then
     # No player connected
-    (( PLAYERS > 0 )) && PLAYERS=0 && logi 3 "$(date) server started ideling"
+    (( PLAYERS > 0 )) && PLAYERS=0 && logTI 3 "server started ideling"
     (( IDLE_LIMIT == 0 )) && IDLE_LIMIT=$((now+IDLE_TIME)) && return 1
     (( now >= IDLE_LIMIT )) && return 0
   else
     # Player connected (or rcon failed)
-    (( players != PLAYERS )) && PLAYERS=${players} && logi 3 "$(date) ${players} players now online"
+    (( players != PLAYERS )) && PLAYERS=${players} && logTI 3 "${players} players now online"
     IDLE_LIMIT=$((now+IDLE_TIME))
   fi
   return 1
@@ -528,7 +658,7 @@ local sdepoch
   if [ ${HAVE_STOP_TIME} = Y ]
   then
     local sleep=$((sdepoch-now))
-    local sleep_time=$( date -d "@${sdepoch}" )
+    local sleep_time=$( timestamp "@${sdepoch}" )
     log 2 "waiting for ${sleep} seconds until ${sleep_time}"
   fi
   local wait=60
@@ -544,7 +674,7 @@ local sdepoch
     if (( LOGLEVEL >=4 ))
     then
       CheckPlayersOnline
-      (( players != ONLINE_PLAYERS )) && log 4 "$(date) online payers ${players} -> ${ONLINE_PLAYERS}" && players=${ONLINE_PLAYERS}
+      (( players != ONLINE_PLAYERS )) && logT 4 "online payers ${players} -> ${ONLINE_PLAYERS}" && players=${ONLINE_PLAYERS}
     fi
     [ ${IDLE_TIME} -gt 0 ] && CheckIdle ${IDLE_TIME} && log 2 "Server ideling for ${IDLE_TIME} seconds. Shutting down..." && override=1 && break
     if [ ${HAVE_STOP_TIME} = Y ]
@@ -553,7 +683,7 @@ local sdepoch
       (( sleep < 60 )) && wait=5
     fi
   done
-  log 1 "$( date ): woke up to shutdown server (or beacuse it is missing)"
+  logT 1 "woke up to shutdown server (or beacuse it is missing)"
   Shutdown ${override}
 }
 
@@ -578,7 +708,7 @@ do
     then
       GetNow NOW
       TMO="-T $((SERVER_UPDATE_SCHEDULE-NOW+1))"
-      log 2 "  scheduling update check for $( date -d @${SERVER_UPDATE_SCHEDULE} )"
+      log 2 "  scheduling update check for $( timestamp "@${SERVER_UPDATE_SCHEDULE}" )"
     else
       TMO=""
     fi
@@ -588,9 +718,9 @@ do
     [ -z "$CMD" ] && continue # This case was timeout, i.e. scheduled update
   fi
   START_NOW=N
-  log 1 "$(date) connection sensed, starting server..."
+  logT 1 "connection sensed, starting server..."
   IDLE_LIMIT=0 # reset ideling
-  /home/steam/Steam/steamapps/common/PalServer/PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS -RCONPort=${RCON_PORT} >${SERVER_LOG} 2>&1 &
+  /home/steam/Steam/steamapps/common/PalServer/PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS -RCONPort=${RCON_PORT} BaseCampWorkerMaxNum=60 >${SERVER_LOG} 2>&1 &
   SERVER_PID="$!"
   log 3 "server pid=${SERVER_PID}"
   wait_for_shutdown_time
