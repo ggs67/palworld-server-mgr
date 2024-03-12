@@ -71,8 +71,8 @@ The script install.sh should be run once. It will download the rcon-cli binary f
 
 #### Installation parameters
 
->[!NOTE] Synopsis
->./install.sh \<install-options\> [-- \<service-options\>]
+>[!NOTE]
+>SYNOPSIS: ./install.sh \<install-options\> [-- \<service-options\>]
 
 ##### Install options:
 
@@ -92,8 +92,9 @@ This tool can be automatically installed (in private, not system directory) usin
 
 Now editing the ini file using the server manager (i.e. -c option) will also generate the corresponding WorldOption.sav file.
 
->[!IMPORTANT] Credits
->Full credits for the palworld-worldoptions tool go to Michael Phelan (aka. legoduded) for the tool and to Truman Kilen (aka. trumank) for the uesave-rs tool used by palworld-worldoptions to write the save file
+>[!IMPORTANT]  
+>
+>CREDITS: Full credits for the palworld-worldoptions tool go to Michael Phelan (aka. legoduded) for the tool and to Truman Kilen (aka. trumank) for the uesave-rs tool used by palworld-worldoptions to write the save file
 ##### Service flags
 
 Flags added after a -- are directly passed on to the server manager service.
