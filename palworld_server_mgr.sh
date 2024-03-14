@@ -23,6 +23,18 @@ SERVER_CMD="PalServer-Linux"
 
 STEAM_PALSERVER="${HOME}/Steam/steamapps/common/PalServer/"
 
+SAVEGAMES="Steam/steamapps/common/PalServer/Pal/Saved/SaveGames"
+CONFIGS="Steam/steamapps/common/PalServer/Pal/Saved/Config"
+
+SCRIPT="${DIR}/${ME}"
+SERVER_LOG="${DIR}/logs/palworld-server.log"
+LOGDIR="${DIR}/logs"
+LOG="${LOGDIR}/${ME}.log"
+BACKUPDIR="${DIR}/backups"
+BACKUPFILE="palserver.tar.bz2"
+UPDATE_SEMAPHORE="${DIR}/.update"
+SHUTDOWN_SEMAPHORE="${DIR}/.shutdown_mgr"
+
 ################################################################################
 error()
 {
@@ -31,6 +43,51 @@ error()
   echo "" >&2
   exit 1
 }
+
+warning()
+{
+  echo "" >&2
+  echo "WARNING: $1" >&2
+}
+
+#-------------------------------------------------------------------------------
+check_owned_files()
+{
+local uo=$( find "$2" ! -user $1 | wc -l )
+  [[ $uo -eq 0 ]] && return 0
+  find "$2" ! -user $1 -exec ls -l {} \;
+  warning "files in $2, must be owned by user $1"
+  error "please 'chown' files listed above to user $1"
+}
+
+#-------------------------------------------------------------------------------
+# The script expect a specific user to execute it
+check_valid_user()
+{
+local userinfo=$( grep -E "^[^:]*[:][^:]*[:]${UID}[:]" /etc/passwd | head -1 )
+  [ -z "${userinfo}" ] && error "no user record found for uid $UID"
+local user=$( cut -d ':' -f 1 <<<"${userinfo}" )
+local home=$( cut -d ':' -f 6 <<<"${userinfo}" )
+
+  [ "${HOME}" != "$home" ] && error "we do not accept manipulated HOME variable, pointing to ${HOME} instead of ${home}"
+  [ ! -d "${HOME}/Steam" ] && error "we expect Steam to be installed in ${HOME}/Steam"
+  [[ $( realpath --relative-base="${HOME}" "${DIR}" ) =~ ^[/] ]] && error "we expect this script to be installed below ${HOME}"
+  [ "${user}" != "${STEAM_USER}" ] && warning "user name '${user}' is not the expected '${STEAM_USER}', you may adjust STEAM_USER in the conf file" && error "please use expected user or edit conf file"
+  check_owned_files ${STEAM_USER} "${DIR}"
+  check_owned_files ${STEAM_USER} "${HOME}/Steam"
+}
+
+check_valid_user
+
+#-------------------------------------------------------------------------------
+need_dir()
+{
+  [ -d "$1" ] && return 0
+  mkdir "$1"    
+}
+
+need_dir "${LOGDIR}"
+need_dir "${BACKUPDIR}"
 
 #-------------------------------------------------------------------------------
 check_int()
@@ -113,14 +170,6 @@ logTI_printf()
   logTI $level "$text"
 }
 
-
-ME=$( basename "$0" )
-SCRIPT="${DIR}/${ME}"
-SERVER_LOG="${DIR}/logs/palworld-server.log"
-LOG="${DIR}/logs/${ME}.log"
-UPDATE_SEMAPHORE="${DIR}/.update"
-SHUTDOWN_SEMAPHORE="${DIR}/.shutdown_mgr"
-
 # Prevent immediate shutdown again
 [ -f "${SHUTDOWN_SEMAPHORE}" ] && rm "${SHUTDOWN_SEMAPHORE}"
 
@@ -130,6 +179,61 @@ START_NOW=N
 START_LOG=N
 DEBUG=N
 WORLDOPTIONS=N
+
+#----------------------------------------------------------------------
+# % 1 var
+today_epoch()
+{
+local e=$( date +%s )
+
+  e=$(( e - e % 86400 - 3600 ))
+  eval $1=$e
+}
+
+#----------------------------------------------------------------------
+file_version()
+{
+local n=$1
+local f="$2"
+local vf vfn
+
+  while (( n>=0 ))
+  do
+    vf="$f.$n"
+    [ $n -eq 0 ] && vf="$f"
+    vfn="$f.$((n+1))"
+    n=$((n-1))
+    [ ! -f "$vf" ] && continue
+    if [ $n -eq $1 ]
+    then
+      rm "${vf}"
+    else
+      mv "${vf}" "${vfn}"
+    fi
+  done
+}
+
+
+#----------------------------------------------------------------------
+backup_palserver()
+{
+  logTI 1 "backing up PalWorld server..."
+  file_version ${SERVER_BACKUP_VERSIONS:-5} "${BACKUPDIR}/${BACKUPFILE}"
+  tar --create --auto-compress --directory="${HOME}" --file="${BACKUPDIR}/${BACKUPFILE}" "${SAVEGAMES}" "${CONFIGS}"
+  logTI 1 "backup done with status $?"
+}
+
+#----------------------------------------------------------------------
+BACKUP_TIMESTAMP=0
+auto_backup()
+{
+  [ "${ENABLE_SERVER_BACKUPS}" = "Y" ] && { backup_palserver ; return $? ; }
+  [ "${ENABLE_SERVER_BACKUPS}" != "D" ] && return 0
+  local t=$( date +%s )
+  (( t < (BACKUP_TIMESTAMP+86400) )) && return 0
+  today_epoch BACKUP_TIMESTAMP
+  backup_palserver
+}
 
 #----------------------------------------------------------------------
 # %1 : variable
@@ -222,6 +326,7 @@ usage()
   echo " -S <delay> : send shutdown request to the server manager. If the server is" >&2
   echo "              curently running a shutdown request with given delay is issued" >&2
   echo "              IMPORTANT: this option also shutds down the server manager !" >&2
+  echo " -B : interactively backup server (only if not running)"
   echo " -c : edit config" >&2
   echo "      NODE: config can only be edited when server is down, because otherwise" >&2
   echo "            it will be overwritten by the server" >&2
@@ -487,6 +592,10 @@ do
 	;;
     -x) DEBUG=Y
 	;;
+    -B) CheckOtherServer && error "palserver must be shutdown prior to backup. nothing done"
+	backup_palserver
+	exit $?
+	;;
     -S) shut_mgr=Y
 	;&
     -s) [ -z "${shut_mgr}" ] && shut_mgr=N
@@ -498,8 +607,7 @@ do
         _status=$?
 	echo ""
 	case ${_status} in
-	    0) echo "setting shutdown semaphore for server manager..."
-	       [ ${shut_mgr} = Y ] && touch "${SHUTDOWN_SEMAPHORE}"
+	    0) [ ${shut_mgr} = Y ] && echo "setting shutdown semaphore for server manager..." && touch "${SHUTDOWN_SEMAPHORE}"
 	       SERVER_PID=${SOCKET_PID} # Set SERVER_PID to allow for CheckServer and use ShutDown
 	       [ -z "${SERVER_PID}" ] && error "BUG: we do not expect SOCKET_PID to be empty"
 	       Shutdown ${SHUTDOWN_DELAY}
@@ -724,6 +832,7 @@ do
   SERVER_PID="$!"
   log 3 "server pid=${SERVER_PID}"
   wait_for_shutdown_time
+  auto_backup
   if [ -f "${SHUTDOWN_SEMAPHORE}" ]
   then
     rm -f "${SHUTDOWN_SEMAPHORE}"

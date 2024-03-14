@@ -99,7 +99,7 @@ then
   do
     PAR="$1"
     shift
-    PPAR="$2" # We shift the argument only where needed (later)
+    PPAR="$1" # We shift the argument only where needed (later)
     [ ${#PAR} -ne 2 ] && echo "ERROR: invalid option '$PAR'" && exit 1
     FLAG="${PAR:1:1}"
     [ ${FLAG} = "-" ] && OPTS=() && MODE=2 && continue
