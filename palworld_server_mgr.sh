@@ -34,6 +34,7 @@ BACKUPDIR="${DIR}/backups"
 BACKUPFILE="palserver.tar.bz2"
 UPDATE_SEMAPHORE="${DIR}/.update"
 SHUTDOWN_SEMAPHORE="${DIR}/.shutdown_mgr"
+POWERDOWN=N
 
 ################################################################################
 error()
@@ -302,7 +303,7 @@ usage()
 {
   echo "" >&2
   echo "usage: ${ME} [-L] [-l <n>] [-x] [-N] [-w]  - run server manager interactively" >&2
-  echo "       ${ME} [-S <delay>|-U|-u|-P]   - send commands to running manager" >&2
+  echo "       ${ME} [-s|-S|-H <delay>|-U|-u|-p]   - send commands to running manager" >&2
   echo "       ${ME} [-h]                    - to display this help" >&2
   echo "" >&2
   echo " Service flags (can be passed via install.sh)" >&2
@@ -317,7 +318,7 @@ usage()
   echo " -N : start server immediatally without waiting for an incomming" >&2
   echo "      connection" >&2
   echo "" >&2
-  echo " -P : list players on server" >&2
+  echo " -p : list players on server" >&2
   echo " -U : send a request to the server manager to check for a PalWorld server" >&2
   echo "      update. Note that if the PalWorld server is currently running," >&2
   echo "      the update will be deferred until its shutdown" >&2
@@ -326,6 +327,7 @@ usage()
   echo " -S <delay> : send shutdown request to the server manager. If the server is" >&2
   echo "              curently running a shutdown request with given delay is issued" >&2
   echo "              IMPORTANT: this option also shutds down the server manager !" >&2
+  echo " -P <delay> : like -S but powers system down after the server is down " >&2
   echo " -B : interactively backup server (only if not running)"
   echo " -c : edit config" >&2
   echo "      NODE: config can only be edited when server is down, because otherwise" >&2
@@ -596,13 +598,16 @@ do
 	backup_palserver
 	exit $?
 	;;
+    -P) echo "powering down system in ${1} seconds"
+	POWERDOWN=Y
+	;&
     -S) shut_mgr=Y
 	;&
     -s) [ -z "${shut_mgr}" ] && shut_mgr=N
 	INTERACTIVE=Y
 	SHUTDOWN_DELAY=$1
 	shift
-	[[ ! "${SHUTDOWN_DELAY}" =~ [0-9]+ ]] && error "-S option requires integer delay in seconds, got ${SHUTDOWN_DELAY}"
+	[[ ! "${SHUTDOWN_DELAY}" =~ [0-9]+ ]] && error "-s|-S|-P options require integer delay in seconds, got ${SHUTDOWN_DELAY}"
 	CheckOtherServer
         _status=$?
 	echo ""
@@ -626,6 +631,7 @@ do
 	    3) echo "looks like port ${PORT} is currently used by another user, nothing done"
 	       ;;
         esac
+	[ "${POWERDOWN}" = Y ] && sudo shutdown -h now
 	exit 0
 	;;
     -U) INTERACTIVE=Y
@@ -635,7 +641,7 @@ do
 	CheckOtherServer || socat STDIN,readbytes=8 UDP4-SENDTO:127.0.0.1:${PORT} <<<"UPDATE  "
 	exit 0
 	;;
-    -P) INTERACTIVE=Y
+    -p) INTERACTIVE=Y
 	CheckOtherServer
         _status=$?
 	echo ""

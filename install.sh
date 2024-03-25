@@ -7,6 +7,7 @@ ME=$( basename "${SCRIPT}" )
 DIR=$( dirname "${SCRIPT}" )
 DIR=$( realpath "${DIR}" )
 
+OPTS=()
 CONF="${DIR}/${ME%.sh}.conf"
 [ ! -f "${CONF}" ] && echo "ERROR: missing conf file ${CONF}" && exit 1
 source "${CONF}"
@@ -14,6 +15,7 @@ source "${CONF}"
 KNOWN_FLAGS="xLl:"
 SERVICE=${SERVICE_NAME}.service
 
+#------------------------------------------------------------------------------
 remove_service()
 {
 local rc="/etc/systemd/system/${SERVICE}"
@@ -26,10 +28,22 @@ local rc="/etc/systemd/system/${SERVICE}"
   sudo systemctl daemon-reload
 }
 
+#------------------------------------------------------------------------------
+sudo_shutdown()
+{
+    local user=$(whoami)
+    local cmd=$( command -v "shutdown" )
+
+    sed -E -e "s|[{][{]USER[}][}]|${user}|g;s|[{][{]SHUTDOWN[}][}]|${cmd}|g;s|[{][{][\\^]USER[}][}]|${user^^}|g" "${DIR}/palworld.sudo" | sudo tee /etc/sudoers.d/palworld >/dev/null
+    sudo chmod 640 /etc/sudoers.d/palworld
+}
+
+#------------------------------------------------------------------------------
 ORIGINAL_SERVICE=N
 REMOVE_SERVICE=N
 PALWORLD_OPTIONS_TOOL=N
 HELP=N
+SUDO_SHUTDOWN=N
 ADDITIONAL_OPTION_ERROR=
 SERVICE_ARGS_ERROR=
 
@@ -40,6 +54,7 @@ usage()
   echo "" >&2
   echo " -h : this help"
   echo " -w : enable palworld-worldoptions"
+  echo " -s : allow unattended system poweroff"
   echo " -R : remove ${SERVICE}" >&2
   echo " -O : install original palworld service without server manager" >&2
   echo "" >&2
@@ -93,7 +108,6 @@ local tooldir="${TOOLDIR}/${tool}"
 if [ $# -gt 0 ]
 then
   MODE=1
-  OPTS=()
   COUNT=0
   while [ $# -gt 0 ]
   do
@@ -128,6 +142,8 @@ then
 	  HELP=Y
 	  ;;
 	-w) PALWORLD_OPTIONS_TOOL=Y
+            ;;
+	-s) SUDO_SHUTDOWN=Y
 	    ;;
 	*) usage "unknwon install option $PAR"
       esac
@@ -161,6 +177,8 @@ then
   exit 0 
 fi
 
+# -s
+[ ${SUDO_SHUTDOWN} = Y ] && sudo_shutdown  
 
 echo "passing options '${OPTS[@]}' to the service..."
 
@@ -208,6 +226,8 @@ fi
 
 # palworld-worldoptions
 PWWO=palworld-worldoptions
+
+sudo apt install git socat
 
 if [ ${PALWORLD_OPTIONS_TOOL} = Y ]
 then
